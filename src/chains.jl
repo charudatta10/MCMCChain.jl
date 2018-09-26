@@ -1,8 +1,93 @@
 #################### Chains ####################
 
-#################### Constructors ####################
 
-function Chains(
+#################### Constructors ####################
+"""
+    Chain(value::Array{T,3})
+
+Arguments:
+- `value`: Samples obtained from a MCMC simulation. 
+           Dimensions are: iterations x variables x chains.
+
+Optional Arguments:
+- `start = 1`
+- `thin = 1`
+- `names = String[]`
+- `uniquenames = Dict{Symbol,Int}()`
+- `chains = Int[]`
+- `weights = Matrix{T}()`
+- `logevidence = T[]`
+
+"""
+function Chain(
+                value::Array{T, 3};
+                start = 1,
+                thin = 1,
+                names = AbstractString[],
+                uniquenames = Dict{Symbol, Int}(),
+                chains = Int[],
+                weights = Matrix{T}(undef, 0, 0),
+                logevidence = T[]
+               ) where {T<:Union{Real, Missing}}
+
+    niters, nvars, nchains = size(value)
+
+    axisnames = [:iteration, :variable, :chain]
+    axisvals = [ 
+                 range(start, step = thin, length = niters),
+                 names,
+                 map(i -> "Chain$i", chains)
+    ]
+
+    # Set values if necessary.
+    if isempty(axisvals[2])
+        axisvals[2] = map(i -> "Param$i", 1:nvars)
+    end
+
+    if isempty(axisvals[3])
+        axisvals[3] = map(i -> "Chain$i", 1:nchains)
+    end
+
+    if isempty(logevidence)
+        logevidence = zeros(T, nchains)
+    end
+
+    if isempty(weights)
+        weights = ones(niters, nvars)
+    end
+
+    # Several sanity checks.
+    @assert length(axisvals[2]) == nvars begin
+        throw(DimensionMismatch("size(value,2) != length(names)"))
+    end
+    @assert length(axisvals[3]) == nchains begin
+        throw(DimensionMismatch("size(value,3) != length(chains)"))
+    end
+    @assert length(logevidence) == nchains begin
+        throw(DimensionMismatch("size(value,3) != length(logevidence)"))
+    end
+    @assert size(weights,1) == niters begin
+        throw(DimensionMismatch("size(value,1) != size(weights,1)"))
+    end
+    @assert size(weights,2) == nchains begin
+        throw(DimensionMismatch("size(value,2) != size(weights,2)"))
+    end
+
+    # Construction of Axis tuples.
+    axs = ntuple(i -> Axis{axisnames[i]}(axisvals[i]), 3)
+    
+    # Set and prepare unique names fiels.
+    if isempty(uniquenames)
+        uniquenames = Dict(gensym() => i for i in 1:nvars)
+    elseif length(uniquenames) != p
+        throw(DimensionMismatch("size(value,2) != length(uniquenames)"))
+    end
+
+    A = AxisArray(convert(Array{Union{Missing, T}, 3}, value), axs...)
+    return Chain{T}(A, uniquenames, logevidence, weights)
+end
+
+function Chain(
                 iters::Int,
                 params::Int;
                 start = 1,
@@ -14,43 +99,10 @@ function Chains(
     value = ones(length(start:thin:iters), params, chains)
     fill!(value, NaN)
 
-    Chains(value, start=start, thin=thin, names=names, uniquenames = uniquenames)
+    Chain(value, start=start, thin=thin, names=names, uniquenames = uniquenames)
 end
 
-function Chains(
-                value::Array{T, 3};
-                start = 1,
-                thin = 1,
-                names = AbstractString[], 
-                uniquenames = Dict{Symbol, Int}(),
-                chains = Int[]
-               ) where {T<:Union{Real, Missing}}
-
-    n, p, m = size(value)
-
-    if isempty(names)
-        names = map(i -> "Param#$i", 1:p)
-    elseif length(names) != p
-        throw(DimensionMismatch("size(value, 2) and names length differ"))
-    end
-    
-    if isempty(uniquenames)
-        uniquenames = Dict(gensym() => i for i in 1:p)
-    elseif length(uniquenames) != p
-        throw(DimensionMismatch("size(value, 2) and uniquenames length differ"))
-    end
-
-    if isempty(chains)
-        chains = collect(1:m)
-    elseif length(chains) != m
-        throw(DimensionMismatch("size(value, 3) and chains length differ"))
-    end
-
-    v = convert(Array{Union{Missing, Real}, 3}, value)
-    Chains(v, range(start, step = thin, length = n), names, uniquenames, chains)
-end
-
-function Chains(
+function Chain(
                 value::Matrix{T};
                 start = 1,
                 thin = 1,
@@ -59,7 +111,7 @@ function Chains(
                 chains = 1
                ) where {T<:Union{Real, Missing}}
 
-    Chains(
+    Chain(
         reshape(value, size(value, 1), size(value, 2), 1), 
         start=start,
         thin=thin,
@@ -69,7 +121,7 @@ function Chains(
     )
 end
 
-function Chains(
+function Chain(
                 value::Vector{T};
                 start = 1,
                 thin = 1,
@@ -77,7 +129,7 @@ function Chains(
                 uniquenames = gensym(),
                 chains = 1
                ) where {T<:Union{Real, Missing}}
-    Chains(
+    Chain(
          reshape(value, length(value), 1, 1),
          start=start,
          thin=thin,
@@ -87,161 +139,34 @@ function Chains(
     )
 end
 
-
-#################### Indexing ####################
-
-function Base.getindex(c::Chains, window, names, chains)
-  inds1 = window2inds(c, window)
-  inds2 = names2inds(c, names)
-  Chains(c.value[inds1, inds2, chains],
-         start = first(c) + (first(inds1) - 1) * step(c),
-         thin = step(inds1) * step(c), names = c.names[inds2],
-         chains = c.chains[chains])
-end
-
-function Base.setindex!(c::AbstractChains, value, iters, names, chains)
-  setindex!(c.value, value, iters2inds(c, iters), names2inds(c, names), chains)
-end
-
-# this is currently broken
-#macro mapiters(iters, c)
-#  quote
-#    ($(esc(iters)) - first($(esc(c)))) / step($(esc(c))) + 1.0
-#  end
-#end
-
-# this is a work around
-mapiters(iters, c) = (collect(iters) .- first(c)) / step(c) .+ 1.
-
-window2inds(c::AbstractChains, window) =
-  throw(ArgumentError("$(typeof(window)) iteration indexing is unsupported"))
-window2inds(c::AbstractChains, ::Colon) = window2inds(c, 1:size(c, 1))
-window2inds(c::AbstractChains, window::AbstractRange) = begin
-  range_ = mapiters(window, c)
-  a = max(ceil(Int, first(range_)), 1)
-  b = step(window)
-  c = min(floor(Int, last(range_)), size(c.value, 1))
-  a:b:c
-end
-
-iters2inds(c::AbstractChains, iters) = iters
-iters2inds(c::AbstractChains, ::Colon) = 1:size(c.value, 1)
-iters2inds(c::AbstractChains, iters::AbstractRange) =
-  convert(StepRange{Int, Int}, mapiters(iters, c))
-iters2inds(c::AbstractChains, iter::Real) = Int(mapiters(iter, c))
-iters2inds(c::AbstractChains, iters::Vector{T}) where {T<:Real} =
-  Int[mapiters(i, c) for i in iters]
-
-names2inds(c::AbstractChains, names) = names
-names2inds(c::AbstractChains, ::Colon) = 1:size(c.value, 2)
-names2inds(c::AbstractChains, name::Real) = [name]
-names2inds(c::AbstractChains, name::AbstractString) = names2inds(c, [name])
-names2inds(c::AbstractChains, names::Vector{T}) where {T<:AbstractString} =
-  indexin(names, c.names)
-
-
 #################### Concatenation ####################
-
-function Base.cat(dim::Integer, c1::AbstractChains, args::AbstractChains...)
-  dim == 1 ? cat1(c1, args...) :
-  dim == 2 ? cat2(c1, args...) :
-  dim == 3 ? cat3(c1, args...) :
-    throw(ArgumentError("cannot concatenate along dimension $dim"))
+function Base.cat(chn::Chain{T}, chns::Chain{T}...; dims) where {T}
+    
 end
-
-function cat1(c1::AbstractChains, args::AbstractChains...)
-  range = c1.range
-  for c in args
-    last(range) + step(range) == first(c) ||
-      throw(ArgumentError("noncontiguous chain iterations"))
-    step(range) == step(c) ||
-      throw(ArgumentError("chain thinning differs"))
-    range = first(range):step(range):last(c)
-  end
-
-  names = c1.names
-  all(c -> c.names == names, args) ||
-    throw(ArgumentError("chain names differ"))
-
-  chains = c1.chains
-  all(c -> c.chains == chains, args) ||
-    throw(ArgumentError("sets of chains differ"))
-
-  value = cat(1, c1.value, map(c -> c.value, args)...)
-  Chains(value, start=first(range), thin=step(range), names=names,
-         chains=chains)
-end
-
-function cat2(c1::AbstractChains, args::AbstractChains...)
-  range = c1.range
-  all(c -> c.range == range, args) ||
-    throw(ArgumentError("chain ranges differ"))
-
-  names = c1.names
-  n = length(names)
-  for c in args
-    names = union(names, c.names)
-    n += length(c.names)
-    n == length(names) ||
-      throw(ArgumentError("non-unique chain names"))
-  end
-
-  chains = c1.chains
-  all(c -> c.chains == chains, args) ||
-    throw(ArgumentError("sets of chains differ"))
-
-  value = cat(2, c1.value, map(c -> c.value, args)...)
-  Chains(value, start=first(range), thin=step(range), names=names,
-         chains=chains)
-end
-
-function cat3(c1::AbstractChains, args::AbstractChains...)
-  range = c1.range
-  all(c -> c.range == range, args) ||
-    throw(ArgumentError("chain ranges differ"))
-
-  names = c1.names
-  all(c -> c.names == names, args) ||
-    throw(ArgumentError("chain names differ"))
-
-  value = cat(3, c1.value, map(c -> c.value, args)...)
-  Chains(value, start=first(range), thin=step(range), names=names)
-end
-
-Base.hcat(c1::AbstractChains, args::AbstractChains...) = cat(2, c1, args...)
-
-Base.vcat(c1::AbstractChains, args::AbstractChains...) = cat(1, c1, args...)
 
 
 #################### Base Methods ####################
+Base.getindex(c::Chain, i...) = getindex(c.values, i...)
+Base.setindex!(c::Chain, v, i...) = setindex!(c.values, v, i...)
+Base.keys(c::Chain) = keys(c.uniquenames)
 
-function Base.keys(c::AbstractChains)
-  c.names
-end
 
-function Base.show(io::IO, c::AbstractChains)
+function Base.show(io::IO, c::AbstractChain)
   print(io, "Object of type \"$(summary(c))\"\n\n")
-  println(io, header(c))
-  show(io, c.value)
+  #println(io, header(c))
+  show(io, c.values)
 end
 
-function Base.size(c::AbstractChains)
-  dim = size(c.value)
-  last(c), dim[2], dim[3]
-end
+Base.size(c::Chain) = size(c.values)
+Base.size(c::Chain, ind) = size(c)[ind]
 
-function Base.size(c::AbstractChains, ind)
-  size(c)[ind]
-end
-
-Base.first(c::AbstractChains) = first(c.range)
-Base.step(c::AbstractChains) = step(c.range)
-Base.last(c::AbstractChains) = last(c.range)
-
+Base.first(c::AbstractChain) = first(c.range)
+Base.step(c::AbstractChain) = step(c.range)
+Base.last(c::AbstractChain) = last(c.range)
 
 #################### Auxilliary Functions ####################
 
-function combine(c::AbstractChains)
+function combine(c::AbstractChain)
   n, p, m = size(c.value)
   value = Array{Float64}(n * m, p)
   for j in 1:p
@@ -254,7 +179,7 @@ function combine(c::AbstractChains)
   value
 end
 
-function header(c::AbstractChains)
+function header(c::AbstractChain)
   string(
     "Iterations = $(first(c)):$(last(c))\n",
     "Thinning interval = $(step(c))\n",
@@ -263,7 +188,7 @@ function header(c::AbstractChains)
   )
 end
 
-function indiscretesupport(c::AbstractChains,
+function indiscretesupport(c::AbstractChain,
                            bounds::Tuple{Real, Real}=(0, Inf))
   nrows, nvars, nchains = size(c.value)
   result = Array{Bool}(undef, nvars * (nrows > 0))
@@ -280,7 +205,7 @@ function indiscretesupport(c::AbstractChains,
   result
 end
 
-function link(c::AbstractChains)
+function link(c::AbstractChain)
   cc = copy(c.value)
   for j in 1:length(c.names)
     x = cc[:, j, :]
