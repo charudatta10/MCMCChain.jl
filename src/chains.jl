@@ -106,8 +106,18 @@ end
 
 #################### Indexing ####################
 
+function Base.getindex(c::Chains, i::Int, j::Int, k::Int)
+
+    ind1 = iters2inds(c, i)
+    ind2 = names2inds(c, j)[1]
+    return c.value[ind1, ind2, k]
+end
+
 function Base.getindex(c::Chains, window, names, chains)
+
+    # FIXMI: Why do we use window2inds and not iters2inds?
     inds1 = window2inds(c, window)
+
     inds2 = names2inds(c, names)
     return Chains(c.value[inds1, inds2, chains],
          start = first(c) + (first(inds1) - 1) * step(c),
